@@ -2,6 +2,7 @@
   freebeacon.c
   David Rowe VK5DGR
   Hamlib PTT and 700C support Bob VK4YA
+  Tx & 700E Alan VK2ZIW
 
   FreeDV Beacon.
 */
@@ -44,14 +45,20 @@
 #define UNSYNC_TIMER        2.0                 // seconds of lost sync we need to see to change state
 #define COM_HANDLE_INVALID   -1
 #define LOG_TIMER           1.0
+#define SNR_MIN             3.0                 // 700E, sync is problematic without SQ enabled
+#define SQ_LEVEL            0.3
+#define METRIC              0.35
+#define SERVICE_PORT        21234
+#define IP_ADDRESS          "192.168.20.122"
 
 /* globals used to communicate with async events and callback functions */
 
 volatile int keepRunning, runListener, recordAny;
 char txtMsg[MAX_CHAR], *ptxtMsg, triggerString[MAX_CHAR];
-int triggered;
+int triggered, txFromNet;
 float snr_est, snr_sample;
 int com_handle, verbose;
+struct FIFO          *nfifo;
 
 /* state machine defines */
 
@@ -167,11 +174,14 @@ void printHelp(const struct option* long_options, int num_opts, char* argv[])
 	fprintf(stderr, "\nFreeBeacon - FreeDV Beacon\n"
 		"usage: %s [OPTIONS]\n\n"
                 "Options:\n"
+                "\t-i        (Disable beacon ident)\n"
+                "\t-b num    (Enable beacon interval)\n"
                 "\t-c        (comm port for Tx or CAT PTT)\n"
-                "\t-u        (Hamlib CAT model number [use rigctl -l to see list])\n"
+                "\t-r        (Hamlib CAT model number [use rigctl -l to see list])\n"
                 "\t-l --list (audio devices)\n"
-                "\t-m --mode 1600|700C|700D\n"
+                "\t-m --mode 1600|700C|700D|700E\n"
                 "\t-t        (tx on start up, useful for testing)\n"
+                "\t-u        (Stop UDP listener)\n"
                 "\t-v        (verbose)\n", argv[0]);
         for(i=0; i<num_opts-1; i++) {
 		if(long_options[i].has_arg == no_argument) {
@@ -194,6 +204,8 @@ void printHelp(const struct option* long_options, int num_opts, char* argv[])
 			option_parameters = " GPIO (BCM GPIO number on Raspberry Pi for alive blinker)";
                 } else if (strcmp("statuspagefile", long_options[i].name) == 0) {
 			option_parameters = " statusPageFileName (where to write status web page)";
+                } else if (strcmp("ip_address", long_options[i].name) == 0) {
+			option_parameters = " ipAddressString (where to send Rx to via port 21234)";
                 }
 		fprintf(stderr, "\t--%s%s\n", long_options[i].name, option_parameters);
 	}
@@ -222,7 +234,7 @@ void callbackNextRxChar(void *callback_state, char c) {
         *ptxtMsg = 0;
          ptxtMsg = txtMsg;
          if (verbose)
-             fprintf(stderr, "  RX txtMsg: %s\n", txtMsg);
+             fprintf(stderr, "  RX txtMsg: %s:\n", txtMsg);
          if (strstr(txtMsg, triggerString) != NULL) {
              triggered = 1;
              snr_sample = snr_est;
@@ -298,7 +310,7 @@ void getTimeStr(char timeStr[]) {
 
     ltime=time(NULL); /* get current cal time */
     loctime = localtime (&ltime);
-    strftime(timeStr, MAX_CHAR, "%F-%R:%S",loctime);
+    strftime(timeStr, MAX_CHAR, "%F-%H-%M-%S",loctime);
 }
 
 
@@ -358,7 +370,7 @@ int hamlib_init(rig_model_t myrig_model, char *commport)
 \*--------------------------------------------------------------------------------------------------------*/
 
 int main(int argc, char *argv[]) {
-    struct freedv      *f;
+    struct freedv      *f2;
     PaError             err;
     PaStreamParameters  inputParameters, outputParameters;
     const PaDeviceInfo *deviceInfo = NULL;
@@ -374,8 +386,8 @@ int main(int argc, char *argv[]) {
     int                 sfFs;
     int                 fssc;
     int                 triggerf, txfilenamef, callsignf, sampleratef, wavefilepathf, rpigpiof, rpigpioalivef;
-    int                 statuspagef;
-    int                 sync, haveRecording;
+    int                 statuspagef, ipAddressf;
+    int                 sync, haveRecording, beaconTimer, beaconInt;
     char                commport[MAX_CHAR];
     char                callsign[MAX_CHAR];
     //FILE               *ftmp;
@@ -384,10 +396,12 @@ int main(int argc, char *argv[]) {
     short               peak = 0;
     char                waveFileWritePath[MAX_CHAR];
     char                rpigpio[MAX_CHAR], rpigpio_path[MAX_CHAR], rpigpioalive[MAX_CHAR], rpigpioalive_path[MAX_CHAR];
-    char                statusPageFileName[MAX_CHAR];
+    char                statusPageFileName[MAX_CHAR], ipAddressString[MAX_CHAR];
     FILE               *fstatus;
     int                 gpioAliveState = 0;
     int                 freedv_mode;
+    int                 ident_en, udp_en;
+    struct MODEM_STATS  g_stats;
 
     /* debug raw file */
 
@@ -398,13 +412,14 @@ int main(int argc, char *argv[]) {
 
     devNum = 0;
     fssc = FS48;
-    sprintf(triggerString, "FreeBeacon");
+    sprintf(triggerString, "M17"); // could be in callsign, use %&
     sprintf(txFileName, "txaudio.wav");
-    sprintf(callsign, "FreeBeacon");
+    sprintf(callsign, "PARROT");
     verbose = 0;
     com_handle = COM_HANDLE_INVALID;
     mnout = 60*FS8;
     state = SRX_IDLE;
+    sync = 0;
     *txtMsg = 0;
     sfRecFileFromRadio = NULL;
     sfRecFileDecAudio = NULL;
@@ -413,10 +428,16 @@ int main(int argc, char *argv[]) {
     *rpigpio = 0;
     *rpigpioalive = 0;
     *statusPageFileName = 0;
-    freedv_mode = FREEDV_MODE_1600;
-    recordAny = 0;
+    *ipAddressString = 0;
+    sprintf(ipAddressString, IP_ADDRESS);
+    freedv_mode = FREEDV_MODE_700E;
+    recordAny = 1;
     myrig_model = 0;
     my_rig = NULL;
+    beaconTimer = 0;
+    beaconInt = 5000;
+    ident_en = 1;
+    udp_en = 1;
 
     if (Pa_Initialize()) {
         fprintf(stderr, "Port Audio failed to initialize");
@@ -425,7 +446,7 @@ int main(int argc, char *argv[]) {
 
     /* Process command line options -----------------------------------------------------------*/
 
-    char* opt_string = "hlvc:u:tm:";
+    char* opt_string = "hlvib:c:u:tm:"; // short options : need arg
     struct option long_options[] = {
         { "dev", required_argument, &devNum, 1 },
         { "trigger", required_argument, &triggerf, 1 },
@@ -434,6 +455,7 @@ int main(int argc, char *argv[]) {
         { "samplerate", required_argument, &sampleratef, 1 },
         { "wavefilewritepath", required_argument, &wavefilepathf, 1 },
         { "statuspagefile", required_argument, &statuspagef, 1 },
+        { "ip_address", required_argument, &ipAddressf, 1 },
         { "rpigpio", required_argument, &rpigpiof, 1 },
         { "rpigpioalive", required_argument, &rpigpioalivef, 1 },
         { "list", no_argument, NULL, 'l' },
@@ -466,6 +488,8 @@ int main(int argc, char *argv[]) {
                 strcpy(waveFileWritePath, optarg);
             } else if (strcmp(long_options[option_index].name, "statuspagefile") == 0) {
                 strcpy(statusPageFileName, optarg);
+            } else if (strcmp(long_options[option_index].name, "ip_address") == 0) {
+                strcpy(ipAddressString, optarg);
             } else if (strcmp(long_options[option_index].name, "rpigpio") == 0) {
                 strcpy(rpigpio, optarg);
                 sys_gpio("/sys/class/gpio/unexport", rpigpio);
@@ -489,6 +513,10 @@ int main(int argc, char *argv[]) {
             }
             break;
 
+        case 'i':
+            ident_en = 0;
+            break;
+
         case 'c':
            strcpy(commport, optarg);
            if (openComPort(commport) != 0) {
@@ -497,7 +525,11 @@ int main(int argc, char *argv[]) {
             }
             break;
 
-        case 'u':       // hamlib CAT rig
+        case 'b':
+            beaconInt = atoi(optarg);
+            break;
+
+        case 'r':       // hamlib CAT rig
             myrig_model = atoi(optarg);      // rig number not its name for now
             if ((myrig_model == 0 ) || (com_handle == COM_HANDLE_INVALID)) {
                 fprintf(stderr,"No Comm port? use 'c' option before 'u' option\n");
@@ -514,6 +546,10 @@ int main(int argc, char *argv[]) {
 
         case 'h':
             printHelp(long_options, num_opts, argv);
+            break;
+
+        case 'u':
+            udp_en = 0;
             break;
 
         case 'v':
@@ -541,6 +577,8 @@ int main(int argc, char *argv[]) {
 	    }
             else if (strcmp(optarg, "700D") == 0)
                 freedv_mode = FREEDV_MODE_700D;
+            else if (strcmp(optarg, "700E") == 0)
+                freedv_mode = FREEDV_MODE_700E;
             else {
                  fprintf(stderr, "Unknown mode: %s\n", optarg);
                  exit(1);
@@ -556,22 +594,45 @@ int main(int argc, char *argv[]) {
 
     /* Open Sound Device and start processing --------------------------------------------------------------*/
 
-    f = freedv_open(freedv_mode); assert(f != NULL);
-    int   fsm   = freedv_get_modem_sample_rate(f);     /* modem sample rate                                   */
-    int   n8m   = freedv_get_n_nom_modem_samples(f);   /* nominal modem sample buffer size at fsm sample rate */
+    if ((freedv_mode == FREEDV_MODE_700D) || (freedv_mode == FREEDV_MODE_700E) || (freedv_mode == FREEDV_MODE_2020)) {
+        // 700D and 700E have some init time stuff so treat it special
+        struct freedv_advanced adv;
+        adv.interleave_frames = 1;
+        f2 = freedv_open_advanced(freedv_mode, &adv);
+        freedv_set_sync(f2, FREEDV_SYNC_AUTO);
+        freedv_set_eq(f2, 0);
+        freedv_set_clip(f2, 1);
+        freedv_set_tx_bpf(f2, 1);
+    } else {
+        f2 = freedv_open(freedv_mode);
+    }
+    assert(f2 != NULL);
+    if ((freedv_mode == FREEDV_MODE_700D) || (freedv_mode == FREEDV_MODE_2020)) {
+        freedv_set_phase_est_bandwidth_mode(f2, 0);
+        freedv_set_dpsk(f2, 0);
+    }
+    freedv_set_squelch_en(f2, 1);
+    freedv_set_snr_squelch_thresh(f2, SQ_LEVEL);
+
+    if (freedv_mode == FREEDV_MODE_700E) 
+        freedv_set_clip(f2, 1);
+
+    int   fsm   = freedv_get_modem_sample_rate(f2);     /* modem sample rate                                   */
+    int   n8m   = freedv_get_n_nom_modem_samples(f2);   /* nominal modem sample buffer size at fsm sample rate */
     int   n48   = n8m*fssc/fsm;                        /* nominal modem sample buffer size at 48kHz           */
     float dT    = (float)n48/fssc;                     /* period of each sound buffer                         */
 
     if (verbose)
-        fprintf(stderr, "fsm: %d n8m: %d n48: %d\n", fsm, n8m, n48);
+        fprintf(stderr, "fsm: %d n8m: %d n48: %d port: %d\n", fsm, n8m, n48, SERVICE_PORT);
 
     short stereo[2*n48];                               /* stereo I/O buffer from port audio                   */
     short rx48k[n48], tx48k[n48];                      /* signals at 48 kHz                                   */
     short rxfsm[n48];                                  /* rx signal at modem sample rate                      */
 
-    freedv_set_callback_txt(f, callbackNextRxChar, callbackNextTxChar, NULL);
+    freedv_set_callback_txt(f2, callbackNextRxChar, callbackNextTxChar, NULL);
 
     fifo = codec2_fifo_create(4*n8m); assert(fifo != NULL);   /* fifo to smooth out variation in demod nin    */
+    nfifo = codec2_fifo_create(4*n8m); assert(fifo != NULL);  /* fifo for network audio in                    */
 
     /* states for sample rate converters */
 
@@ -634,19 +695,29 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Couldn't start sound device\n");
         exit(1);
     }
+/* init UDP sender */
+    int sockfd = 0;
+    struct sockaddr_in addr_con;
+    int addrlen = sizeof(addr_con);
+    addr_con.sin_family = AF_INET;
+    addr_con.sin_port = htons(SERVICE_PORT);
+    addr_con.sin_addr.s_addr = inet_addr(ipAddressString);
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 
     /* Start UDP listener thread */
 
-    start_udp_listener_thread();
+    if (udp_en)
+        start_udp_listener_thread();
 
     /* Init for main loop ----------------------------------------------------------------------------*/
 
     fprintf(stderr, "\nCtrl-C to exit\n");
     fprintf(stderr, "freedv_mode: %d\n", freedv_mode);
-    fprintf(stderr, "trigger string: %s\ntxFileName: %s\n", triggerString, txFileName);
+    fprintf(stderr, "trigger string: %s\ntxFileName: %s bInt: %d en: %d\n", triggerString, txFileName, beaconInt, ident_en);
     fprintf(stderr, "PortAudio devNum: %d\nsamplerate: %d\n", devNum, fssc);
     fprintf(stderr, "WaveFileWritePath: %s\n", waveFileWritePath);
     fprintf(stderr, "statusPageFile: %s\n", statusPageFileName);
+    fprintf(stderr, "ip_address: %s\n", ipAddressString);
     if (com_handle != COM_HANDLE_INVALID) {
         fprintf(stderr, "Comm Port for PTT: %s\n", commport);
     }
@@ -661,6 +732,7 @@ int main(int argc, char *argv[]) {
     keepRunning = 1;
     ptxtMsg = txtMsg;
     triggered = 0;
+    txFromNet = 0;
     logTimer = 0;
     syncTimer = 0;
     haveRecording = 0;
@@ -683,14 +755,18 @@ int main(int argc, char *argv[]) {
         sfPlayFile = openPlayFile(txFileName, &sfFs);
     }
 
+    modem_stats_open(&g_stats);
+    nin = freedv_get_n_max_speech_samples(f2);
 
     /* Main loop -------------------------------------------------------------------------------------*/
 
     while(keepRunning) {
 
         if (state != STX) {
-            short demod_in[freedv_get_n_max_modem_samples(f)];
-            short speech_out[freedv_get_n_speech_samples(f)];
+            short     demod_in[freedv_get_n_max_modem_samples(f2)];
+            short     speech_out[freedv_get_n_speech_samples(f2) + 4];
+            COMP      rx_fdm[freedv_get_n_max_modem_samples(f2)];
+
 
             /* Read samples from sound card, resample to modem sample rate */
 
@@ -717,49 +793,77 @@ int main(int argc, char *argv[]) {
 
             /* demodulate to decoded speech samples */
 
-            nin = freedv_nin(f);
+            memset(speech_out, 0, sizeof(short)*freedv_get_n_speech_samples(f2));
             while (codec2_fifo_read(fifo, demod_in, nin) == 0) {
 	        int nout = 0;
-                nout = freedv_rx(f, speech_out, demod_in);
-                freedv_get_modem_stats(f, &sync, &snr_est);
-                nin = freedv_nin(f);
+                for(int i=0; i<nin; i++) {
+                    rx_fdm[i].real = (float)demod_in[i];
+                    rx_fdm[i].imag = 0.0;
+                }
+                nout = freedv_comprx(f2, &speech_out[2], rx_fdm);
+// was          nout = freedv_rx(f2, speech_out, demod_in);
 
+                freedv_get_modem_stats(f2, &sync, &snr_est);
+		sync += freedv_get_sync(f2); // to be sure
+                if (freedv_mode == FREEDV_MODE_700E) {
+                    freedv_get_modem_extended_stats(f2, &g_stats);
+                    if (g_stats.sync_metric > METRIC ) sync = 3;
+                    if (g_stats.sync) sync = 4;
+                }
                 if (sfRecFileFromRadio)
                     sf_write_short(sfRecFileFromRadio, demod_in, nin);
+                nin = freedv_nin(f2);
                 if (sfRecFileDecAudio)
-                    sf_write_short(sfRecFileDecAudio, speech_out, nout);
+                    sf_write_short(sfRecFileDecAudio, &speech_out[2], nout);
+/* Send UDP */
+                if ((sockfd > 0) && (triggered > 0) && (nout > 100)) {
+                    speech_out[0] = 0x4141;
+                    speech_out[1] = (short)nout;
+                    sendto(sockfd, (char*)speech_out, (nout * 2) + 4, 0,
+                        (struct sockaddr*)&addr_con, addrlen);
+                }
                 tnout += nout;
                 if (tnout > mnout) {
                     sf_close(sfRecFileFromRadio);
                     sf_close(sfRecFileDecAudio);
+                    char finished[16] = {0x41, 0x42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+                    sendto(sockfd, finished,  16, 0,
+                        (struct sockaddr*)&addr_con, addrlen);
+
                 }
             }
         }
 
 
         if (state == STX) {
-            short mod_out[freedv_get_n_max_modem_samples(f)];
-            short speech_in[freedv_get_n_speech_samples(f)];
-
+            short mod_out[freedv_get_n_max_modem_samples(f2)];
+            short speech_in[freedv_get_n_speech_samples(f2)];
+/* get audio from network fifo */
+            if (txFromNet == 1) {
+                if (codec2_fifo_read(nfifo, speech_in, n8m) != 0) {
+                    txFromNet = 0; 
+                }
+            }
             if (sfPlayFile != NULL) {
                 /* resample input sound file as can't guarantee 8KHz sample rate */
 
-                unsigned int nsf = freedv_get_n_speech_samples(f)*sfFs/FS8;
+                unsigned int nsf = freedv_get_n_speech_samples(f2)*sfFs/FS8;
                 short        insf[nsf];
                 unsigned int n = sf_read_short(sfPlayFile, insf, nsf);
-                resample(playsrc, speech_in, insf, FS8, sfFs, freedv_get_n_speech_samples(f), nsf);
+                resample(playsrc, speech_in, insf, FS8, sfFs, freedv_get_n_speech_samples(f2), nsf);
 
-                //fwrite(speech_in, sizeof(short), freedv_get_n_nom_modem_samples(f), ftmp);
+                //fwrite(speech_in, sizeof(short), freedv_get_n_nom_modem_samples(f2), ftmp);
 
                 if (n != nsf) {
                     /* end of file - this signals state machine we've finished */
                     sf_close(sfPlayFile);
                     sfPlayFile = NULL;
+                    beaconTimer = 0;
                 }
-            }
+            } // if sfPlayFile
 
-            freedv_tx(f, mod_out, speech_in);
-            //fwrite(mod_out, sizeof(short), freedv_get_n_nom_modem_samples(f), ftmp);
+            freedv_tx(f2, mod_out, speech_in);
+            //fwrite(mod_out, sizeof(short), freedv_get_n_nom_modem_samples(f2), ftmp);
 
             int n48_out = resample(txsrc, tx48k, mod_out, fssc, fsm, n48, n8m);
             //printf("n48_out: %d n48: %d n_nom: %d\n", n48_out, n48, n8m);
@@ -784,18 +888,18 @@ int main(int argc, char *argv[]) {
         switch(state) {
 
         case SRX_IDLE:
-            if (sync) {
+            if (sync > 0) {
                 next_state = SRX_MAYBE_SYNC;
                 syncTimer = 0.0;
                 *txtMsg = 0;
                 ptxtMsg = txtMsg;
-                freedv_set_total_bit_errors(f, 0);
-                freedv_set_total_bits(f, 0);
+                freedv_set_total_bit_errors(f2, 0);
+                freedv_set_total_bits(f2, 0);
             }
             break;
 
         case SRX_MAYBE_SYNC:
-            if (sync) {
+            if (sync > 0) {
                 syncTimer += dT;
                 if (syncTimer >= SYNC_TIMER) {
 
@@ -849,13 +953,17 @@ int main(int argc, char *argv[]) {
 
                     if (sfRecFileFromRadio)
                         sf_close(sfRecFileFromRadio);
-                    if (sfRecFileDecAudio)
+                    if (sfRecFileDecAudio) {
                         sf_close(sfRecFileDecAudio);
+                        char finished[16] = {0x41, 0x43, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+                        sendto(sockfd, finished,  16, 0,
+                            (struct sockaddr*)&addr_con, addrlen);
+                    }
 
                     /* kick off a tx if triggered */
 
                     if (triggered) {
-                        float ber = (float)freedv_get_total_bit_errors(f)/freedv_get_total_bits(f);
+                        float ber = (float)freedv_get_total_bit_errors(f2)/freedv_get_total_bits(f2);
                         char tmpStr[MAX_CHAR];
 
                         sprintf(tmpStr, "SNR: %3.1f BER: %4.3f de %s\r",
@@ -887,7 +995,7 @@ int main(int argc, char *argv[]) {
             break;
 
         case STX:
-            if (sfPlayFile == NULL) {
+            if ((sfPlayFile == NULL) && (txFromNet == 0)) {
 
                 if (com_handle != COM_HANDLE_INVALID) {
                     lowerRTS(); lowerDTR();
@@ -910,8 +1018,8 @@ int main(int argc, char *argv[]) {
         if (logTimer >= LOG_TIMER) {
             logTimer = 0;
             if (verbose) {
-                fprintf(stderr, "state: %-20s  peak: %6d  sync: %d  SNR: %3.1f  triggered: %d recordany: %d\n",
-                        state_str[state], peak, sync, snr_est, triggered, recordAny);
+                fprintf(stderr, "state: %-20s  peak: %6d  sync: %d  metric: %2.2f SNR: %3.1f foff: %3.1f trig: %d rcd: %d\n",
+                        state_str[state], peak, sync, g_stats.sync_metric, snr_est, g_stats.foff, triggered, recordAny);
             }
             if (*statusPageFileName) {
                 char timeStr[MAX_CHAR];
@@ -942,7 +1050,26 @@ int main(int argc, char *argv[]) {
                     sys_gpio(rpigpioalive_path, "1");
                 }
             }
-        }
+            if ( !sync) {
+               if ( (txFromNet == 1) || ((beaconTimer++ > beaconInt) && ident_en) ) {
+                    beaconTimer = 0; triggered = 1;
+                    sprintf(txtMsg, "700E Test by %s\r", callsign);
+                    ptxtMsg = txtMsg;
+                    if (sfPlayFile == NULL)
+                        sfPlayFile = openPlayFile(txFileName, &sfFs);
+
+                    if (com_handle != COM_HANDLE_INVALID) {
+                        raiseRTS(); raiseDTR();
+                    }
+                    if (*rpigpio) {
+                        sys_gpio(rpigpio_path, "1");
+                    }
+                    if (my_rig)
+                        hamlib_ptt_on();
+                    next_state = STX;
+               }
+            }
+        } // end logTimer
 
         state = next_state;
     } /* end while loop */
@@ -988,7 +1115,7 @@ int main(int argc, char *argv[]) {
     src_delete(rxsrc);
     src_delete(txsrc);
     src_delete(playsrc);
-    freedv_close(f);
+    freedv_close(f2);
     //fclose(ftmp);
 
     return 0;
@@ -1184,7 +1311,6 @@ void lowerRTS(void)
 }
 
 #define BUFSIZE          2048
-#define SERVICE_PORT	21234
 
 void *udp_listener_thread(void* p) {
     struct sockaddr_in myaddr;	/* our address */
@@ -1193,6 +1319,8 @@ void *udp_listener_thread(void* p) {
     int recvlen;			/* # bytes received */
     int fd;				/* our socket */
     char txt[BUFSIZE];	/* receive buffer */
+    short *txtp;
+    txtp = (short*)&txt[0];
 
     /* create a UDP socket */
 
@@ -1219,12 +1347,26 @@ void *udp_listener_thread(void* p) {
         fprintf(stderr, "udp listener waiting on port %d - send me a command!\n", SERVICE_PORT);
         recvlen = recvfrom(fd, txt, BUFSIZE, 0, (struct sockaddr *)&remaddr, &addrlen);
         fprintf(stderr, "received %d bytes\n", recvlen);
-        if (recvlen > 0) {
+        if ((recvlen > 0) && (recvlen < 20)) {
             txt[recvlen] = 0;
             fprintf(stderr, "txt: %s\n", txt);
             if (strcmp(txt, "recordany") == 0) {
                 recordAny = 1;
                 fprintf(stderr, "Next signal to sync will be recorded regardless of txt msg\n");
+            }
+            if (strcmp(txt, "trigger") == 0) {
+                triggered = 1;
+                fprintf(stderr, "Now triggered\n");
+            }
+        } 
+/* audio to send */
+/* receive net audio, first short 0x4141, then length */
+        if (txtp[0] == 0x4141) {
+            if (txtp[1] > 14) {
+                codec2_fifo_write(nfifo, &txtp[2], (recvlen / 2) - 2);
+                txFromNet = 1;
+            } else {
+                txFromNet = 0;
             }
         }
     }
