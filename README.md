@@ -1,20 +1,20 @@
 # Introduction
 
-FreeDV beacon:
-+ Listens for FreeDV signals, then transmits a reply.
-+ Supports FreeDV 1600/700C/700D modes.
-+ Places the received signal files on a web server.
+FreeDV beacon with added REPEAT:
++ Listens for FreeDV signals, then transmits your Rx (data) and an ident. A repeater.
++ Supports FreeDV 1600/700D/700E modes.
++ Places the received signal files ready for a web server.
 + Requires a Linux machine with a sound card and RS232-PTT (or Hamlib CAT) interface to your radio.
 + Just one sound card is required.
 + Can run on machines as small as a Raspberry Pi.
 
-When a "trigger" string is detected in the rx FreeDV text message (e.g. "hello beacon", or the beacon callsign), the beacon will transmit a signal report back to you.
+When a "trigger" string is detected in the rx FreeDV text message (e.g. "%&", or the beacon callsign), the beacon will transmit a signal report back to you. HF noise means long "trigger" strings only rarely trigger so they MUST be short but not use characters in callsigns.
 
 It requires a "txfilename" wave file to transmit, e.g. some one saying "Hi, I am a FreeDV beacon blah blah".  The signal report is encoded into the transmit text message.  Make the wave file long enough so that the the signal report is repeated a few times, say 30 seconds. Transmit will stop when the "txfilename" wave file is played once.
 
 Freebeacon saves the received audio from the radio AND the decoded audio as wavefiles.  Use "wavefilewritepath" to specify where they are written.  The file name is a date and time stamp. The length is limited to 60 seconds. If you set "wavefilewritepath" to a listable webserver directory the files will be available for download on the Web.  To avoid filling your file system write a cron job to clean these files up once a day.
 
-If your input audio device is stereo note we only listen to the left channel.
+If your input USB audio device is stereo note we only use to the left channel.
 
 If you have a RS232 serial port (specified with "-c") RTS and DTR is raised on transmit to key your transmitter, and lowered for receive.
 
@@ -28,9 +28,10 @@ A whole lot of code was lifted from freedv-dev for this program.
 
 + David Rowe, John Nunan
 + Richard Shaw - CMake
-+ Bob Wisdom - Hamlib, FreeDV 700C & 700D modes
++ Bob Wisdom - Hamlib, FreeDV & 700D modes
 + Initially developed Dec 2015
 + Refactored for GitHub, added Hamlib, FreeDV 700C & 700D modes in 2020
++ Mooneer - FreeDV API for, Rx data after FEC available
 
 # Building and Installation
 
