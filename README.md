@@ -1,26 +1,26 @@
 # Introduction
 
-FreeDV beacon with added REPEAT:
-+ Listens for FreeDV signals, then transmits your Rx (data) and an ident. A repeater.
-+ Supports FreeDV 1600/700D/700E modes.
-+ Places the received signal files ready for a web server.
+FreeDV beacon With repeat:
++ Listens for FreeDV signals, then transmits a reply.
++ Supports FreeDV 700D and 700E modes.
++ Places the received signals as files.
 + Requires a Linux machine with a sound card and RS232-PTT (or Hamlib CAT) interface to your radio.
 + Just one sound card is required.
 + Can run on machines as small as a Raspberry Pi.
 
-When a "trigger" string is detected in the rx FreeDV text message (e.g. "%&", or the beacon callsign), the beacon will transmit a signal report back to you. HF noise means long "trigger" strings only rarely trigger so they MUST be short but not use characters in callsigns.
+When a "trigger" string is detected in the rx FreeDV text message (e.g. "//" as in "// de VK2ZZZ" ), the beacon will transmit your signal and an ident with BER stats back to you.
 
-It requires a "txfilename" wave file to transmit, e.g. some one saying "Hi, I am a FreeDV beacon blah blah".  The signal report is encoded into the transmit text message.  Make the wave file long enough so that the the signal report is repeated a few times, say 30 seconds. Transmit will stop when the "txfilename" wave file is played once.
+It requires a "txfilename" wave file to transmit, e.g. some one saying "Hi, I am a FreeDV beacon blah blah".  The signal report is encoded into the transmit text message.  Make the wave file long enough so that the the signal report is sent at least once, say 5 seconds. Transmit will stop when the "txfilename" wave file is played once.
 
-Freebeacon saves the received audio from the radio AND the decoded audio as wavefiles.  Use "wavefilewritepath" to specify where they are written.  The file name is a date and time stamp. The length is limited to 60 seconds. If you set "wavefilewritepath" to a listable webserver directory the files will be available for download on the Web.  To avoid filling your file system write a cron job to clean these files up once a day.
+Freebeacon saves the received audio from the radio AND the decoded audio as wavefiles and as 700C files.  Use "wavefilewritepath" to specify where they are written.  The file name is a date and time stamp. The length is limited to 60 seconds. If you set "wavefilewritepath" to a listable webserver directory the files will be available for download on the Web.  To avoid filling your file system write a cron job to clean these files up once a day.
 
-If your input USB audio device is stereo note we only use to the left channel.
+If your input audio device is stereo note we only listen to the left channel.
 
 If you have a RS232 serial port (specified with "-c") RTS and DTR is raised on transmit to key your transmitter, and lowered for receive.
 
 If you are using Raspberry Pi you can use one of the GPIOs for PTT control of your transmitter using the "--rpigpio" option.  You need to use the BCM GPIO number so "--rpigpio 11" uses pin 23 of the GPIO connector.
 
-Note FreeDV 700C doesn't have a text channel, so we just record the received file without triggering a Tx response.
+Note FreeDV 700C doesn't have a text channel, so not supported.
 
 A whole lot of code was lifted from freedv-dev for this program.
 
@@ -28,10 +28,10 @@ A whole lot of code was lifted from freedv-dev for this program.
 
 + David Rowe, John Nunan
 + Richard Shaw - CMake
-+ Bob Wisdom - Hamlib, FreeDV & 700D modes
++ Bob Wisdom - Hamlib, FreeDV 700C & 700D modes
 + Initially developed Dec 2015
 + Refactored for GitHub, added Hamlib, FreeDV 700C & 700D modes in 2020
-+ Mooneer - FreeDV API for, Rx data after FEC available
++ Alan VK2ZIW for "repeat" May 2022
 
 # Building and Installation
 
@@ -53,8 +53,9 @@ A whole lot of code was lifted from freedv-dev for this program.
     sudo make install
     ```
     Note: On my Ubuntu 18 and RPi I had to add an extra search path to the
-    ld.conf.d directory to match the path the codec2 .so was installed
-    in.
+    ld.conf.d directory to match the path the codec2 .so was installed in.
+    sudo echo "/usr/local/lib" > /etc/ld.so.conf.d/local.conf
+    sudo ldconfig
 
     Check it has found libcodec2.so using:
     ```
