@@ -1,5 +1,5 @@
 #
-# Freebeacon
+# Freebeacon and parrot and cnode
 #
 # CMake configuration contributed by Richard Shaw (KF5OIM)
 # Please report questions, comments, problems, or patches to the freetel
@@ -156,16 +156,20 @@ if(NOT USE_STATIC_CODEC2)
         )
     else()
         message(STATUS "Looking for codec2...")
-        find_package(codec2 QUIET)
+        find_package(codec2)
     endif()
     if(codec2_FOUND)
         get_target_property(CODEC2_LIBRARY codec2 LOCATION)
+        set(CODEC2_LIBRARY /usr/local/lib/libcodec2.so.1.0)
         get_target_property(CODEC2_INCLUDE_DIRS codec2 INTERFACE_INCLUDE_DIRECTORIES)
+#       set(CODEC2_INCLUDE_DIRS /data/home/alanb/Applications/193fb/freebeacon/include1.0)
         message(STATUS "  codec2 library: ${CODEC2_LIBRARY}")
         message(STATUS "  codec2 headers: ${CODEC2_INCLUDE_DIRS}")
         include_directories(${CODEC2_INCLUDE_DIRS})
+        message(STATUS "Here in codec2...")
         list(APPEND FREEBEACON_LINK_LIBS ${CODEC2_LIBRARY})
     else()
+        message(STATUS "Manually Looking for codec2...")
         # Try to find manually
         find_path(CODEC2_INCLUDE_DIRS codec2.h
                   PATH_SUFFIXES codec2)
@@ -292,3 +296,21 @@ if(FREEBEACON_STATIC_DEPS)
 endif()
 
 install(TARGETS freebeacon RUNTIME DESTINATION bin)
+
+######### Parrot #########
+add_executable(parrot parrot.c)
+target_link_libraries(parrot ${FREEBEACON_LINK_LIBS} codec2)
+if(FREEBEACON_STATIC_DEPS)
+    add_dependencies(parrot ${FREEBEACON_STATIC_DEPS})
+endif()
+
+install(TARGETS parrot RUNTIME DESTINATION bin)
+
+######### Cnode for mvoice #########
+add_executable(cnode cnode.c)
+target_link_libraries(cnode ${FREEBEACON_LINK_LIBS} codec2)
+if(FREEBEACON_STATIC_DEPS)
+    add_dependencies(cnode ${FREEBEACON_STATIC_DEPS})
+endif()
+
+install(TARGETS cnode RUNTIME DESTINATION bin)
