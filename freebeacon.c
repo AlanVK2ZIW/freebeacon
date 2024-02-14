@@ -497,6 +497,7 @@ int main(int argc, char *argv[]) {
         { NULL, no_argument, NULL, 0 }
     };
     int num_opts=sizeof(long_options)/sizeof(struct option);
+    sprintf(txtMsg, "Trigger with ++ de urcall\r");
 
     while(1) {
         int option_index = 0;
@@ -652,11 +653,11 @@ int main(int argc, char *argv[]) {
     assert(f2 != NULL);
 /* check for freedv VERSION */
 
-    assert((freedv_get_version() - 14 ) == 0);
+    assert((freedv_get_version() - 15 ) == 0);
 
     if ((freedv_mode == FREEDV_MODE_700D) || (freedv_mode == FREEDV_MODE_2020)) {
         freedv_set_phase_est_bandwidth_mode(f2, 0);
-        freedv_set_dpsk(f2, 0);
+        // AlanInc1.2 freedv_set_dpsk(f2, 0);
     }
 //  if ((freedv_mode == FREEDV_MODE_700C) || (freedv_mode == FREEDV_MODE_700D) || (freedv_mode == FREEDV_MODE_700E)) {
 //                  c2_mode = CODEC2_MODE_700C;
@@ -1143,6 +1144,8 @@ int main(int argc, char *argv[]) {
 
                         sprintf(tmpStr, "SNR: %3.1f BER: %4.3f de %s\r",
                                 snr_sample, ber, callsign);
+			/* Alan99 */
+                        sprintf(tmpStr, "Trigger with ++ eg. ++ de %s\r", callsign);
                         strcpy(txtMsg, tmpStr);
                         fprintf(stderr, "TX txtMsg: %s\n", txtMsg);
                         ptxtMsg = txtMsg;
@@ -1229,6 +1232,8 @@ int main(int argc, char *argv[]) {
                if ( (txFromNet == 1) || ((beaconTimer++ > beaconInt) && ident_en) ) {
                     beaconTimer = 0; triggered = 1;
                     sprintf(txtMsg, "700E Test by %s\r", callsign);
+		/* Alan99 */
+                    sprintf(txtMsg, "Trigger with ++ de %s\r", callsign);
                     ptxtMsg = txtMsg;
                     if (sfPlayFile == NULL)
                         sfPlayFile = openPlayFile(txFileName, &sfFs);

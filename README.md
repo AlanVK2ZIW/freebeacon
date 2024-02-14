@@ -7,9 +7,9 @@ FreeDV beacon With repeat:
 + Requires a Linux machine with a sound card and RS232-PTT (or Hamlib CAT) interface to your radio.
 + Just one sound card is required.
 + Can run on machines as small as a Raspberry Pi.
-+ Now running with Codec2 API Ver 1.0.5
++ Now running with Codec2 API Ver 1.2
 
-When a "trigger" string is detected in the rx FreeDV text message (e.g. "//" as in "// de VK2ZZZ" ), the beacon will transmit your signal and an ident with BER stats back to you.
+When a "trigger" string is detected in the rx FreeDV text message (e.g. "++" as in "++ de VK2ZZZ" ), the beacon will transmit your signal and an ident with BER stats back to you.
 
 It requires a "txfilename" wave file to transmit, e.g. some one saying "Hi, I am a FreeDV beacon blah blah".  The signal report is encoded into the transmit text message.  Make the wave file long enough so that the the signal report is sent at least once, say 5 seconds. Transmit will stop when the "txfilename" wave file is played once.
 
@@ -52,6 +52,8 @@ A whole lot of code was lifted from freedv-dev for this program.
     cmake ../
     make
     sudo make install
+    cd ../src; cp freedv_api_internal.h fmfsk.h /usr/local/include/codec2/.
+    cp kiss_fft.h kiss_fftr.h varicode.h /usr/local/include/codec2/.
     ```
     Note: On my Ubuntu 18 and RPi I had to add an extra search path to the
     ld.conf.d directory to match the path the codec2 .so was installed in.
