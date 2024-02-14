@@ -1,0 +1,13 @@
+:
+cd ~/parrot
+ulimit -c unlimited
+export PATH=/home/alanb/bin:$PATH
+CARD=`grep CODEC /proc/asound/cards | cut -c 2`
+[ -d done ] || mkdir done
+PID=`pgrep -u alanb parrot`
+[ -z "$PID" ] && mv -f 20* done/. && /bin/stty 9600 < /dev/ttyUSB0  && /bin/stty 0 < /dev/ttyUSB0
+[ -z "$PID" ] && /usr/bin/arecord -D hw:CODEC -d 3 -f S16_LE -r 48000 > yyz$$
+sleep 3
+# That seems to clear up the audio state, now run.
+CRD=`~/bin/parrot -l 2>/dev/null  | grep CODEC | cut -c 3`
+[ -z "$PID" ] && ~/bin/parrot -c /dev/ttyUSB0 --dev $CRD --trigger c > log$$a -c /dev/ttyUSB0 2>log$$b &
