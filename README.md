@@ -8,10 +8,17 @@ FreeDV beacon With repeat:
 + Just one sound card is required.
 + Can run on machines as small as a Raspberry Pi.
 + Now running with Codec2 API Ver 1.2
++ Supporting Reliable Text, but we need extra chars for trigger string eg. <dot> <comma> + and -
 
-When a "trigger" string is detected in the rx FreeDV text message (e.g. "++" as in "++ de VK2ZZZ" ), the beacon will transmit your signal and an ident with BER stats back to you.
+When a "trigger" string is detected in the rx FreeDV text message (e.g. "+" as in "+ de VK2ZZZ" ), the beacon will transmit your signal and an ident with BER stats back to you, that is, Reporting off. With Reporting on, edit your config and put + after your callsign.
+[Reporting]
+Enable=1
+Callsign=VK2ZIW+
+GridSquare=QF56HG
 
-It requires a "txfilename" wave file to transmit, e.g. some one saying "Hi, I am a FreeDV beacon blah blah".  The signal report is encoded into the transmit text message.  Make the wave file long enough so that the the signal report is sent at least once, say 5 seconds. Transmit will stop when the "txfilename" wave file is played once.
+And then run FreeDV.
+
+Freebeacon requires a "txfilename" wave file to transmit, e.g. some one saying "Hi, I am a FreeDV beacon blah blah".  The signal report is encoded into the transmit text message.  Make the wave file long enough so that the the signal report is sent at least once, say 5 seconds. Transmit will stop when the "txfilename" wave file is played once.
 
 Freebeacon saves the received audio from the radio AND the decoded audio as wavefiles and as 700C files.  Use "wavefilewritepath" to specify where they are written.  The file name is a date and time stamp. The length is limited to 60 seconds. If you set "wavefilewritepath" to a listable webserver directory the files will be available for download on the Web.  To avoid filling your file system write a cron job to clean these files up once a day.
 

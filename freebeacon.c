@@ -1,11 +1,11 @@
 /*
   freebeacon.c
-  David Rowe VK5DGR
+  Original by David Rowe VK5DGR
   Hamlib PTT and 700C support was by Bob VK4YA
   Tx & 700E Alan VK2ZIW
-  Does data from Rx into array and to later Tx from the array
+  Stores data from Rx into array and to later Tx from that array
   Modes 700D and 700E
-  FreeDV Beacon.
+  FreeDV Beacon and store and retransmit Repeater.
 */
 
 #include <assert.h>
@@ -40,6 +40,7 @@
 #include "freedv_api.h"
 #include "freedv_api_internal.h"
 #include "codec2.h"
+#include "reliable_text.h"
 #include "hamlib/rig.h"
 
 #define MAX_CHAR            80
@@ -59,8 +60,9 @@
 /* globals used to communicate with async events and callback functions */
 
 volatile int keepRunning, runListener, recordAny;
-char txtMsg[MAX_CHAR], *ptxtMsg, triggerString[MAX_CHAR];
-int triggered, txFromNet;
+char txtMsgTx[MAX_CHAR], *ptxtMsgTx;
+char txtMsgRx[MAX_CHAR], *ptxtMsgRx, triggerString[MAX_CHAR], GtimeStr[MAX_CHAR];
+int triggered, txFromNet, beaconTimer, beaconInt;
 float snr_est, snr_sample;
 int com_handle, verbose;
 struct FIFO          *nfifo;
@@ -96,6 +98,17 @@ hamlib_port_t myport;
 RIG *my_rig;
 rig_model_t myrig_model;        // int
 int retcode;
+
+FILE *reliable_tx_fp, *ftxt_rx = NULL;
+int  use_reliabletext = 1;
+bool reliable_txt_rxd = false; 
+reliable_text_t reliable_text_obj;
+
+struct my_callback_state {
+    char  tx_str[80];
+    char *ptx_str;
+    int calls;
+};
 
 
 /*--------------------------------------------------------------------------------------------------------*\
@@ -220,43 +233,56 @@ void printHelp(const struct option* long_options, int num_opts, char* argv[])
 	exit(0);
 }
 
+void getTimeStr(char TimeStr[]) {
+    time_t ltime;     /* calendar time */
+    struct tm *loctime;
+
+    ltime=time(NULL); /* get current cal time */
+    loctime = localtime (&ltime);
+    strftime(TimeStr, MAX_CHAR, "%F-%H-%M-%S",loctime);
+}
+
 
 /* text message callbacks */
+// void my_put_next_rx_char(void *states, char c) { fprintf(stderr, "%c", c); } 
 
 void callbackNextRxChar(void *callback_state, char c) {
 
     /* if we hit end of buffer wrap around to start */
 
-    if ((ptxtMsg - txtMsg) < (MAX_CHAR-1))
-        *ptxtMsg++ = c;
+    if ((ptxtMsgRx - txtMsgRx) < (MAX_CHAR-1))
+        *ptxtMsgRx++ = c;
     else
-        ptxtMsg = txtMsg;
+        ptxtMsgRx = txtMsgRx;
 
     /* if end of string let see if we have a match for the trigger
        string.  Note tx may send trigger string many times.  We only
        need to receive it once to trigger a beacon tx cycle. */
 
-    if (c == 13) {
-        *ptxtMsg++ = c;
-        *ptxtMsg = 0;
-         ptxtMsg = txtMsg;
+    if ( c == 13) {
+        reliable_txt_rxd = false;
+        *ptxtMsgRx++ = c;
+        *ptxtMsgRx = 0;
+         ptxtMsgRx = txtMsgRx;
          if (verbose)
-             fprintf(stderr, "  RX txtMsg: %s:\n", txtMsg);
-         if (strstr(txtMsg, triggerString) != NULL) {
-             triggered = 1;
+             fprintf(stderr, "  RX txtMsg: %s:\n", txtMsgRx);
+         if (strstr(txtMsgRx, triggerString) != NULL) {
+             triggered = beaconTimer = 1;
              snr_sample = snr_est;
-             if (verbose)
-                 fprintf(stderr, "  Tx triggered!\n");
+             if (verbose) {
+                 getTimeStr(GtimeStr);
+                 fprintf(stderr, "\n  Tx triggered! %s\n", GtimeStr);
+             }
          }
     }
 }
 
 char callbackNextTxChar(void *callback_state) {
-    if ((*ptxtMsg == 0) || ((ptxtMsg - txtMsg) >= MAX_CHAR))
-        ptxtMsg = txtMsg;
+    if ((*ptxtMsgTx == 0) || ((ptxtMsgTx - txtMsgTx) >= MAX_CHAR))
+        ptxtMsgTx = txtMsgTx;
 
-    //fprintf(stderr, "TX txtMsg: %d %c\n", (int)*ptxtMsg, *ptxtMsg);
-    return *ptxtMsg++;
+    //fprintf(stderr, "TX txtMsg: %d %c\n", (int)*ptxtMsgTx, *ptxtMsgTx);
+    return *ptxtMsgTx++;
 }
 
 
@@ -311,15 +337,6 @@ void sys_gpio(char filename[], char s[]) {
 }
 
 
-void getTimeStr(char timeStr[]) {
-    time_t ltime;     /* calendar time */
-    struct tm *loctime;
-
-    ltime=time(NULL); /* get current cal time */
-    loctime = localtime (&ltime);
-    strftime(timeStr, MAX_CHAR, "%F-%H-%M-%S",loctime);
-}
-
 
 void hamlib_ptt_on()
 {
@@ -369,6 +386,33 @@ int hamlib_init(rig_model_t myrig_model, char *commport)
     fprintf(stderr,"Freebeacon: Hamlib Rig opened okay\n");
     return(0);
 }
+//Reliable text
+char my_get_next_tx_char(void *callback_state) {
+    struct my_callback_state* pstate = (struct my_callback_state*)callback_state;
+    char  c = *pstate->ptx_str++;
+    if (*pstate->ptx_str == 0) {
+        pstate->ptx_str = pstate->tx_str;
+    }
+
+    return c;
+}
+
+void on_reliable_text_rx(reliable_text_t rt, const char* txt_ptr, int length, void* state)
+{
+    sprintf(txtMsgRx, "%s\n", txt_ptr);
+    reliable_txt_rxd = true;
+    fprintf(stderr, "Reliable text: %s\n", txt_ptr);
+    reliable_text_reset(reliable_text_obj);
+    if (strstr(txtMsgRx, triggerString) != NULL) {
+        triggered = beaconTimer = 1;
+        snr_sample = snr_est;
+        if (verbose) {
+            getTimeStr(GtimeStr);
+            fprintf(stderr, "\n  Tx triggered! %s\n", GtimeStr);
+        }
+    }
+}
+
 
 /*--------------------------------------------------------------------------------------------------------* \
 
@@ -398,7 +442,7 @@ int main(int argc, char *argv[]) {
     int                 fssc;
     int                 triggerf, txfilenamef, callsignf, sampleratef, wavefilepathf, rpigpiof, rpigpioalivef;
     int                 statuspagef, ipAddressf;
-    int                 sync, haveRecording, beaconTimer, beaconInt;
+    int                 sync, haveRecording;
     char                commport[MAX_CHAR];
     char                callsign[10];
     float               syncTimer, logTimer;
@@ -426,7 +470,8 @@ int main(int argc, char *argv[]) {
     int                 FECerr = 0;
     float               sq_level = 0.3;
 //  unsigned char       aaaa[16] = "aaaaaaaaaaaaaaaa";
-
+    char timeStr[MAX_CHAR];
+    int  use_testframes, use_clip, use_txbpf; // use_dpsk;
     /* debug raw file */
 
 //  ftmp = fopen("t.raw", "wb");
@@ -436,16 +481,16 @@ int main(int argc, char *argv[]) {
 
     devNum = 0;
     fssc = FS48;
-    sprintf(triggerString, "M17"); // could be in callsign, use //
+    sprintf(triggerString, "+"); // can not be in callsign //
     sprintf(txFileName, "txaudio.wav");
-    sprintf(rxDataFileName, "rxData.700C");
-    sprintf(callsign, "PARROT");
+    sprintf(rxDataFileName, "Startup.700C");
+    sprintf(callsign, "VK2ZIW+");
     verbose = 0;
     com_handle = COM_HANDLE_INVALID;
     mnout = 60*FS8;
     state = SRX_IDLE;
     sync = 0;
-    *txtMsg = 0;
+    *txtMsgTx = 0;
     sfRecFileFromRadio = NULL;
     sfRecFileDecAudio = NULL;
     sfPlayFile = NULL;
@@ -497,7 +542,7 @@ int main(int argc, char *argv[]) {
         { NULL, no_argument, NULL, 0 }
     };
     int num_opts=sizeof(long_options)/sizeof(struct option);
-    sprintf(txtMsg, "Trigger with ++ de urcall\r");
+    sprintf(txtMsgTx, "Trigger with ++ de urcall\r");
 
     while(1) {
         int option_index = 0;
@@ -601,7 +646,7 @@ int main(int argc, char *argv[]) {
             break;
 
         case 't':
-            sprintf(txtMsg,"tx Test");
+            sprintf(txtMsgTx,"tx Test");
             state = STX;
             break;
 
@@ -635,25 +680,29 @@ int main(int argc, char *argv[]) {
             break;
         }
     }
+    getTimeStr(timeStr); // get prog start time
+    getTimeStr(GtimeStr); // get prog start time
 
-    /* Open Sound Device and start processing --------------------------------------------------------------*/
+    if (verbose)
+        fprintf(stderr, "\nStarted at %s .\n", GtimeStr);
 
-    if ((freedv_mode == FREEDV_MODE_700D) || (freedv_mode == FREEDV_MODE_700E) || (freedv_mode == FREEDV_MODE_2020)) {
-        // 700D and 700E have some init time stuff so treat it special
-        struct freedv_advanced adv;
- // now gone      adv.interleave_frames = 1;
-        f2 = freedv_open_advanced(freedv_mode, &adv);
-        freedv_set_sync(f2, FREEDV_SYNC_AUTO);
-        freedv_set_eq(f2, 0);
-        freedv_set_clip(f2, 1);
-        freedv_set_tx_bpf(f2, 1);
-    } else {
-        f2 = freedv_open(freedv_mode);
-    }
+    /* Initialise FreeDV library, Open Sound Device and start processing --------------------------------*/
+
+    use_testframes = 0; use_clip = 0; use_txbpf = 1; // use_dpsk = 0;
+    f2 = freedv_open(freedv_mode);
+    assert(f2 != NULL);
+
+    /* these are all optional ------------------ */
+    freedv_set_test_frames(f2, use_testframes);
+    freedv_set_clip(f2, use_clip);
+    freedv_set_tx_bpf(f2, use_txbpf);
+ // freedv_set_dpsk(f2, use_dpsk);
+    freedv_set_verbose(f2, 0);
+    freedv_set_eq(f2, 1); /* for 700C/D/E & 800XA */
     assert(f2 != NULL);
 /* check for freedv VERSION */
 
-    assert((freedv_get_version() - 15 ) == 0);
+    assert((freedv_get_version() - 16 ) == 0);
 
     if ((freedv_mode == FREEDV_MODE_700D) || (freedv_mode == FREEDV_MODE_2020)) {
         freedv_set_phase_est_bandwidth_mode(f2, 0);
@@ -685,8 +734,26 @@ int main(int argc, char *argv[]) {
     short stereo[2*n48];                               /* stereo I/O buffer from port audio                   */
     short rx48k[n48], tx48k[n48];                      /* signals at 48 kHz                                   */
     short rxfsm[n48];                                  /* rx signal at modem sample rate                      */
+// Reliable text
+    ftxt_rx = stderr;
+    if (use_reliabletext) {
+      reliable_tx_fp = ftxt_rx;
+      if (strlen(callsign) > 7) sprintf(callsign,  "NOCALL");
 
-    freedv_set_callback_txt(f2, callbackNextRxChar, callbackNextTxChar, NULL);
+      reliable_text_obj = reliable_text_create();
+      assert(reliable_text_obj != NULL);
+      reliable_text_set_string(reliable_text_obj, callsign, strlen(callsign));
+      reliable_text_use_with_freedv(reliable_text_obj, f2,
+                                    on_reliable_text_rx, NULL);
+    } else {
+//    freedv_set_callback_txt(freedv, my_put_next_rx_char, NULL, ftxt_rx);
+        /* set up callback for txt msg chars */
+        struct my_callback_state  my_cb_state;
+        sprintf(my_cb_state.tx_str, "%s\r", txtMsgTx);
+        my_cb_state.ptx_str = my_cb_state.tx_str;
+        my_cb_state.calls = 0;
+        freedv_set_callback_txt(f2, callbackNextRxChar, &my_get_next_tx_char, &my_cb_state);
+    }
 
     // freedv_set_callback_data(f2, callbackC2datarx, NULL, NULL);
 
@@ -789,7 +856,7 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, intHandler);  /* ctrl-C to exit gracefully */
     keepRunning = 1;
-    ptxtMsg = txtMsg;
+    ptxtMsgRx = txtMsgRx;
     triggered = 0;
     txFromNet = 0;
     logTimer = 0;
@@ -955,7 +1022,8 @@ int main(int argc, char *argv[]) {
                 }
                 tnout += nin;
                 if (tnout > mnout) {
-                    fprintf(stderr, "Rx timeout %d\n", tnout);
+                    getTimeStr(timeStr);
+                    fprintf(stderr, "Rx timeout %d %s .\n", tnout, timeStr);
                     if (sfRecFileFromRadio)
                         sf_close(sfRecFileFromRadio);
                     sfRecFileFromRadio = NULL;
@@ -1026,7 +1094,7 @@ int main(int argc, char *argv[]) {
                     sf_close(sfPlayFile);
                     sfPlayFile = NULL;
                     beaconTimer = 0;
-                    if (verbose || triggered) fprintf(stderr, "\n== Done Parrot send! %d  %s ==\n", txCnt, rxDataFileName);
+                    if (verbose || triggered) fprintf(stderr, "\n== Done Parrot send! %d  %s %s ==\n", txCnt, timeStr, rxDataFileName);
                     triggered = 0;
                 }
             freedv_tx(f2, mod_out, speech_in);
@@ -1060,8 +1128,8 @@ int main(int argc, char *argv[]) {
             if (sync > 0) {
                 next_state = SRX_MAYBE_SYNC;
                 syncTimer = 0.0;
-                *txtMsg = 0;
-                ptxtMsg = txtMsg;
+                *txtMsgRx = 0;
+                ptxtMsgRx = txtMsgRx;
                 freedv_set_total_bit_errors(f2, 0);
                 freedv_set_total_bits(f2, 0);
             }
@@ -1095,10 +1163,9 @@ int main(int argc, char *argv[]) {
 
             if ((triggered || recordAny) && !haveRecording) {
 
-                char timeStr[MAX_CHAR];
                 char recFileFromRadioName[MAX_CHAR2], recFileDecAudioName[MAX_CHAR2];
 
-                getTimeStr(timeStr);
+                getTimeStr(timeStr); // time now
                 sprintf(recFileFromRadioName,"%s/%s_from_radio.wav", waveFileWritePath, timeStr);
                 sprintf(recFileDecAudioName,"%s/%s_decoded_speech.wav", waveFileWritePath, timeStr);
                 sprintf(rxDataFileName,"%s/%s_rxData.700C", waveFileWritePath, timeStr);
@@ -1146,9 +1213,9 @@ int main(int argc, char *argv[]) {
                                 snr_sample, ber, callsign);
 			/* Alan99 */
                         sprintf(tmpStr, "Trigger with ++ eg. ++ de %s\r", callsign);
-                        strcpy(txtMsg, tmpStr);
-                        fprintf(stderr, "TX txtMsg: %s\n", txtMsg);
-                        ptxtMsg = txtMsg;
+                        strcpy(txtMsgTx, tmpStr);
+                        fprintf(stderr, "TX txtMsg: %s\n", txtMsgTx);
+                        ptxtMsgTx = txtMsgTx;
                         sfPlayFile = openPlayFile(txFileName, &sfFs);
 
                         if (com_handle != COM_HANDLE_INVALID) {
@@ -1210,8 +1277,8 @@ int main(int argc, char *argv[]) {
                 fstatus = fopen(statusPageFileName, "wt");
                 if (fstatus != NULL) {
                     fprintf(fstatus, "<html>\n<head>\n<meta http-equiv=\"refresh\" content=\"2\">\n</head>\n<body>\n");
-                    fprintf(fstatus, "%s: state: %s peak: %d sync: %d SNR: %3.1f triggered: %d recordany: %d txtMsg: %s\n",
-                            timeStr, state_str[state], peak, sync, snr_est, triggered, recordAny, txtMsg);
+                    fprintf(fstatus, "%s: state: %s peak: %d sync: %d SNR: %3.1f triggered: %d recordany: %d txtmsg: %s\n",
+                            timeStr, state_str[state], peak, sync, snr_est, triggered, recordAny, txtMsgRx);
                     fprintf(fstatus, "</body>\n</html>\n");
                     fclose(fstatus);
                 }
@@ -1231,10 +1298,12 @@ int main(int argc, char *argv[]) {
             if ( !sync) {
                if ( (txFromNet == 1) || ((beaconTimer++ > beaconInt) && ident_en) ) {
                     beaconTimer = 0; triggered = 1;
-                    sprintf(txtMsg, "700E Test by %s\r", callsign);
+                    sprintf(rxDataFileName, "Ident");
+                    getTimeStr(timeStr);
+                //  sprintf(txtMsgTx, "700E Test by %s\r", callsign);
 		/* Alan99 */
-                    sprintf(txtMsg, "Trigger with ++ de %s\r", callsign);
-                    ptxtMsg = txtMsg;
+                    sprintf(txtMsgTx, "Trigger with + de %s\r", callsign);
+                    ptxtMsgTx = txtMsgTx;
                     if (sfPlayFile == NULL)
                         sfPlayFile = openPlayFile(txFileName, &sfFs);
 
