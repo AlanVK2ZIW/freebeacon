@@ -61,7 +61,8 @@
 
 volatile int keepRunning, runListener, recordAny;
 char txtMsgTx[MAX_CHAR], *ptxtMsgTx;
-char txtMsgRx[MAX_CHAR], *ptxtMsgRx, triggerString[MAX_CHAR], GtimeStr[MAX_CHAR];
+char txtMsgRx[MAX_CHAR], *ptxtMsgRx, triggerString[8], GtimeStr[MAX_CHAR];
+char triggerString2[8];
 int triggered, txFromNet, beaconTimer, beaconInt;
 float snr_est, snr_sample;
 int com_handle, verbose;
@@ -386,7 +387,7 @@ int hamlib_init(rig_model_t myrig_model, char *commport)
     fprintf(stderr,"Freebeacon: Hamlib Rig opened okay\n");
     return(0);
 }
-//Reliable text
+//Normal text
 char my_get_next_tx_char(void *callback_state) {
     struct my_callback_state* pstate = (struct my_callback_state*)callback_state;
     char  c = *pstate->ptx_str++;
@@ -403,13 +404,17 @@ void on_reliable_text_rx(reliable_text_t rt, const char* txt_ptr, int length, vo
     reliable_txt_rxd = true;
     fprintf(stderr, "Reliable text: %s\n", txt_ptr);
     reliable_text_reset(reliable_text_obj);
-    if (strstr(txtMsgRx, triggerString) != NULL) {
+    if (strstr(txtMsgRx, triggerString2) != NULL) {
         triggered = beaconTimer = 1;
         snr_sample = snr_est;
-        if (verbose) {
-            getTimeStr(GtimeStr);
-            fprintf(stderr, "\n  Tx triggered! %s\n", GtimeStr);
-        }
+    }
+    if ((txtMsgRx[6] == triggerString[0]) || (txtMsgRx[7] == triggerString[0])) {
+        triggered = beaconTimer = 1;
+        snr_sample = snr_est;
+    }
+    if (triggered) {
+        getTimeStr(GtimeStr);
+        fprintf(stderr, "\n  Tx triggered! %s\n", GtimeStr);
     }
 }
 
@@ -482,6 +487,7 @@ int main(int argc, char *argv[]) {
     devNum = 0;
     fssc = FS48;
     sprintf(triggerString, "+"); // can not be in callsign //
+    sprintf(triggerString2, "Z"); // can not be in callsign Well...//
     sprintf(txFileName, "txaudio.wav");
     sprintf(rxDataFileName, "Startup.700C");
     sprintf(callsign, "VK2ZIW+");
@@ -737,7 +743,7 @@ int main(int argc, char *argv[]) {
 // Reliable text
     ftxt_rx = stderr;
     if (use_reliabletext) {
-      reliable_tx_fp = ftxt_rx;
+      reliable_tx_fp = ftxt_rx; // to write file
       if (strlen(callsign) > 7) sprintf(callsign,  "NOCALL");
 
       reliable_text_obj = reliable_text_create();

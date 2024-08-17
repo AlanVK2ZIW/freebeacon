@@ -8,9 +8,12 @@ FreeDV beacon With repeat:
 + Just one sound card is required.
 + Can run on machines as small as a Raspberry Pi.
 + Now running with Codec2 API Ver 1.2
-+ Supporting Reliable Text, but we need extra chars for trigger string eg. <dot> <comma> + and -
++ Using Reliable Text, but we need extra chars for trigger string eg. <dot> <comma> + and -
++ Since FreeDV cannot add these to a callsign, now triggering with numbers at the end of your callsign eg. VK2FABC0 or for short callsigns K1AA000
++ With ideas like this, it's like having Talk Groups.
 
-When a "trigger" string is detected in the rx FreeDV text message (e.g. "+" as in "+ de VK2ZZZ" ), the beacon will transmit your signal and an ident with BER stats back to you, that is, Reporting off. With Reporting on, edit your config and put + after your callsign.
+# With Reporting off:
+When a "trigger" string is detected in the rx FreeDV text message (e.g. "+" as in "+ de VK2ZZZ" ), the beacon will transmit your signal and an ident with BER stats back to you, that is, Reporting off. With Reporting on, edit your config and put 0-9 after your callsign. Max callsign length in FreeDV is eight. This software "looks" at positions 7 and 8.
 [Reporting]
 Enable=1
 Callsign=VK2ZIW+
